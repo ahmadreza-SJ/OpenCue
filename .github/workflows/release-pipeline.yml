@@ -1,0 +1,246 @@
+name: OpenCue Release Pipeline
+
+# Trigger this pipeline when a commit is tagged with a version number, e.g. "v0.4.32".
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    name: Preflight
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Set build ID
+        run: |
+          set -e
+          ci/generate_version_number.sh > VERSION
+          echo "Build ID: $(cat ./VERSION)"
+          echo "BUILD_ID=$(cat ./VERSION)" >> ${GITHUB_ENV}
+
+      - name: Get current tag name
+        run: echo "TAG_NAME=${GITHUB_REF/refs\/tags\//}" >> ${GITHUB_ENV}
+
+      - name: Verify tag name and version match
+        run: |
+          set -e
+          if [ "v$(cat VERSION)" != "${TAG_NAME}" ]; then
+            echo "Version check failed: code version v$(cat VERSION) does not match tag name ${TAG_NAME}"
+            echo "Original GITHUB_REF: ${GITHUB_REF}"
+            exit 1
+          fi
+
+  release_docker_images:
+    needs: preflight
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [cuebot, rqd, pycue, pyoutline, cuegui, cuesubmit, cueadmin]
+
+    name: Release ${{ matrix.component }} Docker image
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Set build ID
+        run: |
+          set -e
+          ci/generate_version_number.sh > VERSION
+          echo "Build ID: $(cat ./VERSION)"
+          echo "BUILD_ID=$(cat ./VERSION)" >> ${GITHUB_ENV}
+
+      - name: Pull Docker image from staging
+        run: |
+          set -e
+          docker pull opencuebuild/${{ matrix.component }}:${BUILD_ID}
+
+      - name: Rebuild and push Docker image
+        uses: docker/build-push-action@v1
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PASS }}
+          dockerfile: ${{ matrix.component }}/Dockerfile
+          repository: opencue/${{ matrix.component }}
+          tags: ${{ env.BUILD_ID }}, latest
+
+  create_release:
+    needs: preflight
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.S3_REGION }}
+          role-to-assume: ${{ secrets.AWS_S3_ROLE }}
+          role-duration-seconds: 1800
+
+      - name: Set build ID
+        run: |
+          set -e
+          ci/generate_version_number.sh > VERSION
+          echo "Build ID: $(cat ./VERSION)"
+          echo "BUILD_ID=$(cat ./VERSION)" >> ${GITHUB_ENV}
+
+      - name: Fetch artifacts
+        id: fetch_artifacts
+        env:
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/artifacts/"
+          aws s3 sync "s3://${S3_BUCKET}/opencue/${BUILD_ID}/" "${GITHUB_WORKSPACE}/artifacts/"
+          echo "::set-output name=filenames::$(ls "${GITHUB_WORKSPACE}/artifacts/" | xargs)"
+
+      - name: List artifacts
+        run: |
+          echo ${{ steps.fetch_artifacts.outputs.filenames }}
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          last_tagged_version=$(git describe --tags --abbrev=0 $(git rev-list --tags --skip=1 --max-count=1))
+          commits_since_last_release=$(git log --reverse --pretty="* %H %s" ${last_tagged_version}..HEAD)
+          # See https://github.community/t/set-output-truncates-multiline-strings/16852
+          commits_since_last_release="${commits_since_last_release//$'\n'/'%0A'}"
+          echo "::set-output name=commits::${commits_since_last_release}"
+
+      - name: Create release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ env.BUILD_ID }}
+          release_name: v${{ env.BUILD_ID }}
+          body: |
+            To learn how to install and configure OpenCue, see our [Getting Started guide](https://www.opencue.io/docs/getting-started/).
+
+            ## Changes:
+
+            ${{ steps.release_notes.outputs.commits }}
+          draft: true
+          prerelease: false
+
+      - name: Upload License
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/artifacts/LICENSE
+          asset_name: LICENSE
+          asset_content_type: application/octet-stream
+
+      - name: Upload Database Schema
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/artifacts/schema-${{ env.BUILD_ID }}.sql
+          asset_name: schema-${{ env.BUILD_ID }}.sql
+          asset_content_type: application/octet-stream
+
+      - name: Upload Demo Data
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/artifacts/seed_data-${{ env.BUILD_ID }}.sql
+          asset_name: seed_data-${{ env.BUILD_ID }}.sql
+          asset_content_type: application/octet-stream
+
+      - name: Upload Cuebot JAR
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/artifacts/cuebot-${{ env.BUILD_ID }}-all.jar
+          asset_name: cuebot-${{ env.BUILD_ID }}-all.jar
+          asset_content_type: application/octet-stream
+
+      - name: Upload Cuebot RPM
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/artifacts/opencue-cuebot-${{ env.BUILD_ID }}-1.noarch.rpm
+          asset_name: opencue-cuebot-${{ env.BUILD_ID }}-1.noarch.rpm
+          asset_content_type: application/octet-stream
+
+      - name: Upload RQD Tar
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/artifacts/rqd-${{ env.BUILD_ID }}-all.tar.gz
+          asset_name: rqd-${{ env.BUILD_ID }}-all.tar.gz
+          asset_content_type: application/octet-stream
+
+      - name: Upload CueGUI Tar
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/artifacts/cuegui-${{ env.BUILD_ID }}-all.tar.gz
+          asset_name: cuegui-${{ env.BUILD_ID }}-all.tar.gz
+          asset_content_type: application/octet-stream
+
+      - name: Upload PyCue Tar
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/artifacts/pycue-${{ env.BUILD_ID }}-all.tar.gz
+          asset_name: pycue-${{ env.BUILD_ID }}-all.tar.gz
+          asset_content_type: application/octet-stream
+
+      - name: Upload PyOutline Tar
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/artifacts/pyoutline-${{ env.BUILD_ID }}-all.tar.gz
+          asset_name: pyoutline-${{ env.BUILD_ID }}-all.tar.gz
+          asset_content_type: application/octet-stream
+
+      - name: Upload CueSubmit Tar
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/artifacts/cuesubmit-${{ env.BUILD_ID }}-all.tar.gz
+          asset_name: cuesubmit-${{ env.BUILD_ID }}-all.tar.gz
+          asset_content_type: application/octet-stream
+
+      - name: Upload CueAdmin Tar
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/artifacts/cueadmin-${{ env.BUILD_ID }}-all.tar.gz
+          asset_name: cueadmin-${{ env.BUILD_ID }}-all.tar.gz
+          asset_content_type: application/octet-stream

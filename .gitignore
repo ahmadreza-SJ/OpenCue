@@ -1,0 +1,12 @@
+*.idea/
+*.pyc
+.DS_Store
+venv*/
+/build/
+/VERSION
+.scannerwork/
+*.egg-info/
+.coverage
+coverage.xml
+htmlcov/
+/.env

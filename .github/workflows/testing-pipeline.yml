@@ -1,0 +1,141 @@
+name: OpenCue Testing Pipeline
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  test_python_2019:
+    name: Run Python Unit Tests (CY2019)
+    runs-on: ubuntu-latest
+    container: aswf/ci-opencue:2019
+    steps:
+      - uses: actions/checkout@v2
+      - name: Run Python Tests
+        run: ci/run_python_tests.sh
+
+  test_cuebot_2019:
+    name: Build Cuebot and Run Unit Tests (CY2019)
+    runs-on: ubuntu-latest
+    container:
+      image: aswf/ci-opencue:2019
+    steps:
+    - uses: actions/checkout@v2
+    - name: Build with Gradle
+      run: |
+        chown -R aswfuser:aswfgroup .
+        su -c "cd cuebot && ./gradlew build --stacktrace --info" aswfuser
+
+  test_python_2020:
+    name: Run Python Unit Tests (CY2020)
+    runs-on: ubuntu-latest
+    container: aswf/ci-opencue:2020
+    steps:
+      - uses: actions/checkout@v2
+      - name: Run Python Tests
+        run: ci/run_python_tests.sh
+
+  test_cuebot_2020:
+    name: Build Cuebot and Run Unit Tests (CY2020)
+    runs-on: ubuntu-latest
+    container:
+      image: aswf/ci-opencue:2020
+    steps:
+      - uses: actions/checkout@v2
+      - name: Build with Gradle
+        run: |
+          chown -R aswfuser:aswfgroup .
+          su -c "cd cuebot && ./gradlew build --stacktrace --info" aswfuser
+
+  test_python_2021:
+    name: Run Python Unit Tests (CY2021)
+    runs-on: ubuntu-latest
+    container: aswf/ci-opencue:2021
+    steps:
+      - uses: actions/checkout@v2
+      - name: Run Python Tests
+        run: ci/run_python_tests.sh
+
+  test_cuebot_2021:
+    name: Build Cuebot and Run Unit Tests (CY2021)
+    runs-on: ubuntu-latest
+    container:
+      image: aswf/ci-opencue:2021
+    steps:
+      - uses: actions/checkout@v2
+      - name: Build with Gradle
+        run: |
+          chown -R aswfuser:aswfgroup .
+          su -c "cd cuebot && ./gradlew build --stacktrace --info" aswfuser
+
+  test_python_2022:
+    name: Run Python Unit Tests (CY2022)
+    runs-on: ubuntu-latest
+    container: aswf/ci-opencue:2022
+    steps:
+      - uses: actions/checkout@v2
+      - name: Run Python Tests
+        run: ci/run_python_tests.sh
+
+  test_cuebot_2022:
+    name: Build Cuebot and Run Unit Tests (CY2022)
+    runs-on: ubuntu-latest
+    container:
+      image: aswf/ci-opencue:2022
+    steps:
+      - uses: actions/checkout@v2
+      - name: Build with Gradle
+        run: |
+          chown -R aswfuser:aswfgroup .
+          su -c "cd cuebot && ./gradlew build --stacktrace --info" aswfuser
+
+  lint_python:
+    name: Lint Python Code
+    runs-on: ubuntu-latest
+    container: aswf/ci-opencue:2022
+    steps:
+      - uses: actions/checkout@v2
+      - name: Lint Python Code
+        run: ci/run_python_lint.sh
+
+  test_sphinx:
+    name: Test Documentation Build
+    runs-on: ubuntu-latest
+    container:
+      image: aswf/ci-opencue:2020
+    steps:
+      - uses: actions/checkout@v2
+      - name: Run Sphinx build
+        run: ci/build_sphinx_docs.sh
+
+  check_changed_files:
+    name: Check Changed Files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Get Changed Files
+        id: get_changed_files
+        uses: jitterbit/get-changed-files@v1
+      - name: Check for Version Change
+        run: ci/check_changed_files.py ${{ steps.get_changed_files.outputs.modified }} ${{ steps.get_changed_files.outputs.removed }}
+
+  check_migration_files:
+    name: Check Database Migration Files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Check Migration Files
+        run: ci/check_database_migrations.py
+
+  check_for_version_bump:
+    name: Check for Version Bump
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Get Changed Files
+        id: get_changed_files
+        uses: jitterbit/get-changed-files@v1
+      - name: Check for Version Change
+        run: ci/check_version_bump.py ${{ steps.get_changed_files.outputs.all }}
